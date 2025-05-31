@@ -91,6 +91,7 @@ class EnvRobosuite(EB.EnvBase):
 
         self._env_name = env_name
         self._init_kwargs = deepcopy(kwargs)
+        
         self.env = robosuite.make(self._env_name, **kwargs)
         self.base_env = self.env # for mimicgen
         self.env_lang = env_lang

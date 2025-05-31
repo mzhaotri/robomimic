@@ -39,7 +39,7 @@ import robomimic.utils.env_utils as EnvUtils
 import robomimic.utils.file_utils as FileUtils
 import robomimic.utils.lang_utils as LangUtils
 from robomimic.config import config_factory
-from robomimic.algo import algo_factory, RolloutPolicy
+from robomimic.algo import algo_factory, RolloutPolicy, TeleopPolicy
 from robomimic.utils.log_utils import PrintLogger, DataLogger, flush_warnings
 
 
@@ -144,6 +144,41 @@ def train(config, device, eval_only=False):
                     # env_name = env.get_env_attr(key="name", id=0)[0]
                 else:
                     env = create_env_helper()
+                    # env_name = env.name
+            except Exception as e:
+                print("EXCEPTION! creating envs for eval led to error:")
+                print(traceback.print_exc())
+                env = None
+            print(env)
+            yield env
+
+
+    def render_env_iterator():
+        for (env_meta, shape_meta, env_name) in zip(eval_env_meta_list, eval_shape_meta_list, eval_env_name_list):
+            def create_render_env_helper(env_i=0):
+                env_kwargs = dict(
+                    env_meta=env_meta,
+                    env_name=env_name,
+                    render=True,
+                    render_offscreen=config.experiment.render_video,
+                    use_image_obs=shape_meta["use_images"],
+                    seed=config.train.seed * 1000 + env_i,
+                )
+                env = EnvUtils.create_env_from_metadata(**env_kwargs)
+                # handle environment wrappers
+                env = EnvUtils.wrap_env_from_config(env, config=config)  # apply environment warpper, if applicable
+                # import pdb; pdb.set_trace()
+                return env
+
+            try:
+                # if config.experiment.rollout.batched:
+                #     from tianshou.env import SubprocVectorEnv
+                #     env_fns = [lambda env_i=i: create_env_helper(env_i) for i in range(config.experiment.rollout.num_batch_envs)]
+                #     env = SubprocVectorEnv(env_fns)
+                #     # env_name = env.get_env_attr(key="name", id=0)[0]
+                # else:
+                env = create_render_env_helper()
+                
                     # env_name = env.name
             except Exception as e:
                 print("EXCEPTION! creating envs for eval led to error:")
@@ -342,13 +377,58 @@ def train(config, device, eval_only=False):
             )
 
             num_episodes = config.experiment.rollout.n
+            
+            # create env from metadata for rendering
+            print("env_meta", env_meta)
+            # import pdb; pdb.set_trace()
+            render_env = EnvUtils.create_env_from_metadata(
+                env_meta=env_meta,
+                env_name='PnPCounterToCab',
+                render=True,
+                render_offscreen=False,
+                use_image_obs=shape_meta["use_images"],
+                seed=config.train.seed * 1000 + 0,
+            )
+
+            # handle environment wrappers
+            render_env = EnvUtils.wrap_env_from_config(render_env, config=config)  # apply environment warpper, if applicable
+            # render_env = EnvUtils.wrap_env(render_env, config=config)  # apply environment warpper, if applicable
+            human_teleop_policy = TeleopPolicy(
+                render_env
+            )
+            TrainUtils.run_dagger_rollout(
+                auto_policy=rollout_model, 
+                teleop_policy=human_teleop_policy, 
+                env=render_env, 
+                horizon=1000,
+                use_goals=False,
+                render=True,
+                video_writer=None,
+                video_skip=5,
+                terminate_on_success=False,
+            )
+            
+            
+            # render_env = render_env_iterator()
+            # import pdb; pdb.set_trace()
+            TrainUtils.run_rollout(
+                policy=rollout_model, 
+                env=render_env, 
+                horizon=1000,
+                use_goals=False,
+                render=True,
+                video_writer=None,
+                video_skip=5,
+                terminate_on_success=False,
+            )
+            
             all_rollout_logs, video_paths = TrainUtils.rollout_with_stats(
                 policy=rollout_model,
                 envs=env_iterator(),
                 horizon=eval_env_horizon_list,
                 use_goals=config.use_goals,
                 num_episodes=num_episodes,
-                render=False,
+                render=True,
                 video_dir=video_dir if config.experiment.render_video else None,
                 epoch=epoch,
                 video_skip=config.experiment.get("video_skip", 5),
