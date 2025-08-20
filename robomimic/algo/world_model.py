@@ -196,7 +196,7 @@ class DynamicsTrainer(PolicyAlgo):
                 continue
             B, T = images.shape[:2]
 
-            data_permuted = images.reshape(B * T, 128, 128, 3).permute(0, 3, 1, 2)  # Now shape (B*T, 3, 128, 128)
+            data_permuted = images.reshape(B * T, 256, 256, 3).permute(0, 3, 1, 2)  # Now shape (B*T, 3, 128, 128)
             img_size = self._scaled_img_size
             resized_data = F.interpolate(data_permuted, size=(img_size, img_size), mode='bilinear', align_corners=False)
             resized_data_back = resized_data.permute(0, 2, 3, 1).reshape(B, T, img_size, img_size, 3)
@@ -1801,6 +1801,9 @@ class DynamicsModel_DeterMLP_Unet_VAE_EmbedOnly_Reward(DynamicsModel_DeterMLP_Un
     def _load_model_ckpt(self):
         dir_name = os.path.dirname(os.path.dirname(self.load_ckpt)) 
         load_config = os.path.join(dir_name, "config.json")
+        # remove 'Documents/' from the path if it exists
+        if 'Documents/' in load_config:
+            load_config = load_config.replace('Documents/', '')
         ext_cfg = json.load(open(load_config, 'r'))
         
         config = config_factory(ext_cfg["algo_name"])
