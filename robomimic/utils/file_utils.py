@@ -19,7 +19,7 @@ import robomimic.utils.torch_utils as TorchUtils
 from robomimic.config import config_factory
 from robomimic.algo import algo_factory
 from robomimic.algo import RolloutPolicy
-
+import pdb
 
 def create_hdf5_filter_key(hdf5_path, demo_keys, key_name):
     """
@@ -99,6 +99,8 @@ def get_env_metadata_from_dataset(dataset_path, ds_format="robomimic"):
     dataset_path = os.path.expanduser(dataset_path)
     f = h5py.File(dataset_path, "r")
     if ds_format == "robomimic":
+        # pdb.set_trace()
+        # assert 0 == 1
         env_meta = json.loads(f["data"].attrs["env_args"])
     elif ds_format == "r2d2":
         env_meta = dict(f.attrs)

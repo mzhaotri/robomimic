@@ -52,7 +52,7 @@ class DataLogger(object):
         self._tb_logger = None
         self._wandb_logger = None
         self._data = dict() # store all the scalar data logged so far
-
+        log_wandb = False
         if log_tb:
             from tensorboardX import SummaryWriter
             self._tb_logger = SummaryWriter(os.path.join(log_dir, 'tb'))

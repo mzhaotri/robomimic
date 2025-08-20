@@ -24,6 +24,8 @@ import robomimic.utils.action_utils as AcUtils
 import robomimic.utils.vis_utils as VisUtils
 import robomimic.utils.lang_utils as LangUtils
 from robomimic.macros import LANG_EMB_KEY
+import robosuite
+import pdb
 
 from torch.utils.data import DataLoader
 
@@ -86,26 +88,6 @@ def algo_factory(algo_name, config, obs_key_shapes, ac_dim, device):
         ac_dim=ac_dim,
         device=device,
         **algo_kwargs
-    )
-  
-
-def res_mlp_args_from_config(res_mlp_config):
-    return dict(
-        use_res_mlp=res_mlp_config.enabled,
-        res_mlp_kwargs=dict(
-            hidden_dim=res_mlp_config.hidden_dim,
-            num_blocks=res_mlp_config.num_blocks,
-            normalization=res_mlp_config.use_layer_norm,
-        ),
-    )
-
-def res_mlp_args_from_config_vae(res_mlp_config):
-    return dict(
-        res_mlp_kwargs=dict(
-            hidden_dim=res_mlp_config.hidden_dim,
-            num_blocks=res_mlp_config.num_blocks,
-            normalization=res_mlp_config.use_layer_norm,
-        ),
     )
 
 
@@ -656,6 +638,9 @@ class RolloutPolicy(object):
         """
         if self.lang_encoder is not None:
             self._ep_lang_emb = TensorUtils.to_numpy(self.lang_encoder.get_lang_emb(lang))
+            # batchify if needed
+            if len(self._ep_lang_emb.shape) == 1:
+                self._ep_lang_emb = TensorUtils.to_batch(self._ep_lang_emb)
         self.policy.set_eval()
         self.policy.reset()
 
@@ -671,15 +656,17 @@ class RolloutPolicy(object):
         """
         if self.obs_normalization_stats is not None:
             ob = ObsUtils.normalize_dict(ob, obs_normalization_stats=self.obs_normalization_stats)
-        assert batched is False
-        if self._ep_lang_emb is not None:
-            if len(ob["robot0_eef_pos"].shape) == 1:
-                ob["lang_emb"] = self._ep_lang_emb
-            else:
-                ob["lang_emb"] = np.repeat(self._ep_lang_emb[np.newaxis], len(ob["robot0_eef_pos"]), axis=0)
-        ob = TensorUtils.to_tensor(ob)
         if not batched:
             ob = TensorUtils.to_batch(ob)
+        if self._ep_lang_emb is not None:
+            assert len(self._ep_lang_emb.shape) == 2
+            if len(ob["robot0_eef_pos"].shape) == 2: # (B, D)
+                ob["lang_emb"] = self._ep_lang_emb
+            elif len(ob["robot0_eef_pos"].shape) == 3: # (B, T, D)
+                ob["lang_emb"] = np.repeat(self._ep_lang_emb[:,np.newaxis], ob["robot0_eef_pos"].shape[1], axis=1)
+            else:
+                raise NotImplementedError
+        ob = TensorUtils.to_tensor(ob)
         ob = TensorUtils.to_device(ob, self.policy.device)
         ob = TensorUtils.to_float(ob)
         return ob
@@ -725,3 +712,121 @@ class RolloutPolicy(object):
                     ac_dict[key] = rot
             ac = AcUtils.action_dict_to_vector(ac_dict, action_keys=action_keys)
         return ac
+
+
+def is_empty_input_spacemouse(action_dict):
+    if not np.all(action_dict["right_delta"] == 0):
+        return False
+    if "base_mode" in action_dict and action_dict["base_mode"] != -1:
+        return False
+    if "base" in action_dict and not np.all(action_dict["base"] == 0):
+        return False
+
+    return True
+
+
+class TeleopPolicy(object):
+    """
+    Wraps @Algo object to make it easy to run policies in a rollout loop.
+    """
+    def __init__(self, env):
+        """
+        Args:
+            policy (Algo instance): @Algo object to wrap to prepare for rollouts
+
+            obs_normalization_stats (dict): optionally pass a dictionary for observation
+                normalization. This should map observation keys to dicts
+                with a "mean" and "std" of shape (1, ...) where ... is the default
+                shape for the observation.
+        """
+        self.teleop_device = 'spacemouse'
+        self.pos_sensitivity = 2
+        self.rot_sensitivity = 2
+        self.teleop_controller = None
+        self.camera_angle = "robot0_frontview"
+        self.translucent_robot = True
+        self.env = env
+        self.mirror_actions = True
+
+        self.setup_teleop_device(env)
+    
+    def setup_teleop_device(self, env):
+        self.product_id = 50734
+        self.vendor_id = 9583
+        if self.teleop_device == 'spacemouse':
+            from robosuite.devices import SpaceMouse
+
+            self.device = SpaceMouse(
+                env=env.env.env,
+                pos_sensitivity=self.pos_sensitivity,
+                rot_sensitivity=self.rot_sensitivity,
+                vendor_id=self.vendor_id,
+                product_id=self.product_id,
+            )
+
+        # Set active robot
+        self.device.start_control()
+        self.active_robot = env.env.env.robots[self.device.active_robot]
+        self.active_arm = self.device.active_arm
+        
+
+        self.all_prev_gripper_actions = [
+            {
+                f"{robot_arm}_gripper": np.repeat([0], robot.gripper[robot_arm].dof)
+                for robot_arm in robot.arms
+                if robot.gripper[robot_arm].dof > 0
+            }
+            for robot in env.env.env.robots
+        ]
+
+    def start_episode(self, lang=None):
+        """
+        Prepare the policy to start a new rollout. I don't think the teleop policy needs anything
+        """
+        pass
+
+    def _prepare_observation(self, ob, batched=False):
+        """
+        Prepare raw observation dict from environment for policy.
+
+        Args:
+            ob (dict): single observation dictionary from environment (no batch dimension, 
+                and np.array values for each key)
+
+            batched (bool): whether the input is already batched
+        """
+        pass
+
+    def __repr__(self):
+        """Pretty print network description"""
+        return self.policy.__repr__()
+
+    def __call__(self):
+        """
+        Reads data from the teleop device and returns the action
+        """
+        # Get the newest action
+        input_ac_dict = self.device.input2action(mirror_actions=self.mirror_actions)
+        action_dict = deepcopy(input_ac_dict)
+
+        # set arm actions
+        for arm in self.active_robot.arms:
+            controller_input_type = self.active_robot.part_controllers[arm].input_type
+            if controller_input_type == "delta":
+                action_dict[arm] = input_ac_dict[f"{arm}_delta"]
+            elif controller_input_type == "absolute":
+                action_dict[arm] = input_ac_dict[f"{arm}_abs"]
+            else:
+                raise ValueError
+
+
+        # Maintain gripper state for each robot but only update the active robot with action
+        env_action = [
+            robot.create_action_vector(self.all_prev_gripper_actions[i])
+            for i, robot in enumerate(self.env.env.env.robots)
+        ]
+        
+        env_action[self.device.active_robot] = self.active_robot.create_action_vector(action_dict)
+        env_action = np.concatenate(env_action)
+        # pdb.set_trace()
+        return env_action
